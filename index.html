@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IPFS Service Worker Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        line-height: 1.5;
+      }
+
+      h1,
+      h2 {
+        margin: 20px 0 10px 0;
+      }
+
+      .section {
+        margin-bottom: 30px;
+        border: 1px solid #ccc;
+        padding: 15px;
+      }
+
+      input,
+      textarea,
+      button {
+        font-family: inherit;
+        font-size: 14px;
+        padding: 5px 8px;
+        margin: 5px 5px 5px 0;
+        border: 1px solid #999;
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        max-width: 500px;
+      }
+
+      textarea {
+        height: 150px;
+        font-family: monospace;
+      }
+
+      button {
+        background: white;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #f0f0f0;
+      }
+
+      .result {
+        background: #f8f8f8;
+        border: 1px solid #ddd;
+        padding: 10px;
+        margin-top: 10px;
+      }
+
+      .result pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-family: monospace;
+        font-size: 12px;
+      }
+
+      .stats {
+        display: inline-block;
+        margin-right: 20px;
+        margin-top: 10px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      #swStatus {
+        margin-bottom: 20px;
+        padding: 5px;
+        border: 1px solid #999;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IPFS Service Worker Test</h1>
+
+    <div id="swStatus">Checking Service Worker...</div>
+
+    <div class="section">
+      <h2>Fetch IPFS Content</h2>
+      <input
+        type="text"
+        id="cidInput"
+        placeholder="Enter CID or CID/path"
+        value="QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+      />
+      <button onclick="fetchIPFS()">Fetch</button>
+      <button onclick="fetchIPFS(true)">Force Refresh</button>
+      <div class="result hidden" id="fetchResult">
+        <pre id="fetchContent"></pre>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Cache Management</h2>
+      <button onclick="getCacheStats()">Get Stats</button>
+      <button onclick="clearCache()">Clear All</button>
+      <button onclick="togglePatternInput()">Clear Pattern</button>
+
+      <div class="hidden" id="patternGroup">
+        <input type="text" id="patternInput" placeholder="Pattern to clear" />
+        <button onclick="clearCachePattern()">Clear</button>
+      </div>
+
+      <div id="cacheStats" class="hidden">
+        <div class="stats">Entries: <span id="cacheEntries">0</span></div>
+        <div class="stats">Hit Rate: <span id="hitRate">0%</span></div>
+        <div class="stats">
+          Total Requests: <span id="totalRequests">0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Configuration</h2>
+      <button onclick="loadConfig()">Load</button>
+      <button onclick="saveConfig()">Save</button>
+      <button onclick="resetConfig()">Reset</button>
+      <textarea id="configEditor" placeholder="Configuration JSON"></textarea>
+    </div>
+
+    <div class="section">
+      <h2>System Info</h2>
+      <button onclick="getTrace()">Get Trace</button>
+      <button onclick="probeGateways()">Probe Gateways</button>
+      <div class="result hidden" id="systemInfo">
+        <pre id="systemContent"></pre>
+      </div>
+    </div>
+
+    <script>
+      let swRegistration = null;
+
+      document.addEventListener("DOMContentLoaded", function () {
+        checkServiceWorker();
+        loadConfig();
+      });
+
+      async function checkServiceWorker() {
+        const statusEl = document.getElementById("swStatus");
+
+        if ("serviceWorker" in navigator) {
+          try {
+            swRegistration = await navigator.serviceWorker.register("/sw.js");
+
+            if (swRegistration.active) {
+              statusEl.textContent = "Service Worker: Active";
+            } else {
+              statusEl.textContent = "Service Worker: Installing...";
+
+              swRegistration.addEventListener("updatefound", () => {
+                const newWorker = swRegistration.installing;
+                newWorker.addEventListener("statechange", () => {
+                  if (newWorker.state === "activated") {
+                    statusEl.textContent = "Service Worker: Active";
+                  }
+                });
+              });
+            }
+          } catch (error) {
+            statusEl.textContent = "Service Worker: Failed - " + error.message;
+          }
+        } else {
+          statusEl.textContent = "Service Worker: Not Supported";
+        }
+      }
+
+      async function fetchIPFS(forceRefresh = false) {
+        const cidInput = document.getElementById("cidInput");
+        const resultArea = document.getElementById("fetchResult");
+        const contentEl = document.getElementById("fetchContent");
+
+        const cid = cidInput.value.trim();
+        if (!cid) {
+          alert("Please enter a CID");
+          return;
+        }
+
+        const refreshParam = forceRefresh ? "?refresh=1" : "";
+        const url = `/sw-cgi/ipfs/${cid}${refreshParam}`;
+
+        resultArea.classList.remove("hidden");
+        contentEl.textContent = "Fetching...";
+
+        try {
+          const response = await fetch(url);
+          const contentType = response.headers.get("content-type") || "";
+
+          let content;
+          if (contentType.startsWith("text/") || contentType.includes("json")) {
+            content = await response.text();
+          } else {
+            content = `Binary content (${contentType})\nSize: ${response.headers.get("content-length") || "unknown"} bytes`;
+          }
+
+          contentEl.textContent = `Status: ${response.status}\nContent-Type: ${contentType}\n\n${content}`;
+        } catch (error) {
+          contentEl.textContent = `Error: ${error.message}`;
+        }
+      }
+
+      async function getCacheStats() {
+        try {
+          const response = await fetch("/sw-cgi/api/cache?action=status");
+          const stats = await response.json();
+
+          document.getElementById("cacheEntries").textContent = stats.entries;
+          document.getElementById("hitRate").textContent = stats.hitRate + "%";
+          document.getElementById("totalRequests").textContent =
+            stats.totalRequests;
+          document.getElementById("cacheStats").classList.remove("hidden");
+        } catch (error) {
+          alert("Failed to get cache stats: " + error.message);
+        }
+      }
+
+      async function clearCache() {
+        if (!confirm("Clear all cache?")) return;
+
+        try {
+          const response = await fetch("/sw-cgi/api/cache?action=clear", {
+            method: "PUT",
+          });
+          const result = await response.json();
+          alert(`Cleared ${result.cleared} entries`);
+          getCacheStats();
+        } catch (error) {
+          alert("Failed to clear cache: " + error.message);
+        }
+      }
+
+      function togglePatternInput() {
+        const patternGroup = document.getElementById("patternGroup");
+        patternGroup.classList.toggle("hidden");
+      }
+
+      async function clearCachePattern() {
+        const pattern = document.getElementById("patternInput").value.trim();
+        if (!pattern) {
+          alert("Please enter a pattern");
+          return;
+        }
+
+        try {
+          const response = await fetch("/sw-cgi/api/cache?action=clear", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pattern }),
+          });
+          const result = await response.json();
+          alert(`Cleared ${result.cleared} entries`);
+          document.getElementById("patternGroup").classList.add("hidden");
+          document.getElementById("patternInput").value = "";
+          getCacheStats();
+        } catch (error) {
+          alert("Failed to clear cache: " + error.message);
+        }
+      }
+
+      async function loadConfig() {
+        try {
+          const response = await fetch("/sw-cgi/api/config");
+          const config = await response.json();
+          document.getElementById("configEditor").value = JSON.stringify(
+            config,
+            null,
+            2,
+          );
+        } catch (error) {
+          alert("Failed to load config: " + error.message);
+        }
+      }
+
+      async function saveConfig() {
+        const configEditor = document.getElementById("configEditor");
+
+        try {
+          const config = JSON.parse(configEditor.value);
+          const response = await fetch("/sw-cgi/api/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(config),
+          });
+
+          if (response.ok) {
+            alert("Config saved");
+          } else {
+            alert("Failed to save config");
+          }
+        } catch (error) {
+          alert("Invalid JSON or save failed: " + error.message);
+        }
+      }
+
+      async function resetConfig() {
+        if (!confirm("Reset to default?")) return;
+
+        try {
+          const defaultConfig = {
+            localGateway: "http://localhost:8080",
+            publicGateways: [
+              "https://ipfs.imwolf.ink",
+              "https://ipfs.io",
+              "https://dweb.link",
+            ],
+            timeouts: { local: 1000, public: 10000 },
+            maxConcurrentRequests: 3,
+          };
+
+          const response = await fetch("/sw-cgi/api/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(defaultConfig),
+          });
+
+          if (response.ok) {
+            document.getElementById("configEditor").value = JSON.stringify(
+              defaultConfig,
+              null,
+              2,
+            );
+            alert("Config reset");
+          } else {
+            alert("Failed to reset");
+          }
+        } catch (error) {
+          alert("Reset failed: " + error.message);
+        }
+      }
+
+      async function getTrace() {
+        const systemInfo = document.getElementById("systemInfo");
+        const systemContent = document.getElementById("systemContent");
+
+        try {
+          const response = await fetch("/sw-cgi/trace");
+          const trace = await response.text();
+
+          systemContent.textContent = trace;
+          systemInfo.classList.remove("hidden");
+        } catch (error) {
+          systemContent.textContent = "Error: " + error.message;
+          systemInfo.classList.remove("hidden");
+        }
+      }
+
+      async function probeGateways() {
+        if (swRegistration && swRegistration.active) {
+          swRegistration.active.postMessage({ type: "PROBE_GATEWAYS" });
+          alert("Gateway probing started");
+        } else {
+          alert("Service Worker not ready");
+        }
+      }
+    </script>
+  </body>
+</html>
